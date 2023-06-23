@@ -176,12 +176,8 @@ impl DeployCommand {
         // via only `add_revision` if bindle naming schema is updated so bindles can be deterministically ordered by Cloud.
         let channel_id = match self.get_app_id_cloud(&client, name.clone()).await {
             Ok(app_id) => {
-                Client::add_revision(
-                    &client,
-                    name.clone(),
-                    bindle_id.version_string().clone(),
-                )
-                .await?;
+                Client::add_revision(&client, name.clone(), bindle_id.version_string().clone())
+                    .await?;
                 let existing_channel_id = self
                     .get_channel_id_cloud(&client, SPIN_DEPLOY_CHANNEL_NAME.to_string(), app_id)
                     .await?;
@@ -197,7 +193,7 @@ impl DeployCommand {
                     None,
                     Some(active_revision_id),
                     None,
-                    None
+                    None,
                 )
                 .await
                 .context("Problem patching a channel")?;
@@ -587,7 +583,10 @@ pub async fn login_connection(deployment_env_id: Option<&str>) -> Result<LoginCo
                 Some(name) => {
                     // TODO: allow auto redirect to login preserving the name
                     eprintln!("You have no instance saved as '{}'", name);
-                    eprintln!("Run `spin platform login --environment-name {}` to log in", name);
+                    eprintln!(
+                        "Run `spin platform login --environment-name {}` to log in",
+                        name
+                    );
                     std::process::exit(1);
                 }
                 None => {

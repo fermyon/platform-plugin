@@ -1,5 +1,5 @@
-use std::io::Write;
 use std::io::stdin;
+use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
@@ -10,10 +10,10 @@ use serde::Serialize;
 use tracing::log;
 use url::Url;
 
-
 use crate::opts::{
-    PLATFORM_SERVER_URL_OPT, PLATFORM_URL_ENV, DEPLOYMENT_ENV_NAME_ENV, INSECURE_OPT, SPIN_AUTH_TOKEN, HIPPO_USERNAME, HIPPO_PASSWORD, BINDLE_SERVER_URL_OPT, BINDLE_URL_ENV, BINDLE_USERNAME, BINDLE_PASSWORD,
-    TOKEN,
+    BINDLE_PASSWORD, BINDLE_SERVER_URL_OPT, BINDLE_URL_ENV, BINDLE_USERNAME,
+    DEPLOYMENT_ENV_NAME_ENV, HIPPO_PASSWORD, HIPPO_USERNAME, INSECURE_OPT, PLATFORM_SERVER_URL_OPT,
+    PLATFORM_URL_ENV, SPIN_AUTH_TOKEN, TOKEN,
 };
 
 const DEFAULT_PLATFORM_URL: &str = "https://127.0.0.1:5309/";
@@ -115,7 +115,7 @@ pub struct LoginCommand {
         name = "list",
         long = "list",
         takes_value = false,
-        conflicts_with = "environment-name",
+        conflicts_with = "environment-name"
     )]
     pub list: bool,
 }
@@ -136,8 +136,7 @@ fn parse_url(url: &str) -> Result<url::Url> {
 
 impl LoginCommand {
     pub async fn run(&self) -> Result<()> {
-        if self.list
-        {
+        if self.list {
             self.run_list().await?
         }
 
