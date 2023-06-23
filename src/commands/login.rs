@@ -1,32 +1,52 @@
+use std::io::Write;
+use std::io::stdin;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use cloud::client::{Client, ConnectionConfig};
-use cloud_openapi::models::DeviceCodeItem;
-use cloud_openapi::models::TokenInfo;
+use hippo::{Client, ConnectionInfo};
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::json;
-use tokio::fs;
 use tracing::log;
 use url::Url;
-use uuid::Uuid;
+
 
 use crate::opts::{
-    CLOUD_SERVER_URL_OPT, CLOUD_URL_ENV, DEPLOYMENT_ENV_NAME_ENV, INSECURE_OPT, SPIN_AUTH_TOKEN,
+    PLATFORM_SERVER_URL_OPT, PLATFORM_URL_ENV, DEPLOYMENT_ENV_NAME_ENV, INSECURE_OPT, SPIN_AUTH_TOKEN, HIPPO_USERNAME, HIPPO_PASSWORD, BINDLE_SERVER_URL_OPT, BINDLE_URL_ENV, BINDLE_USERNAME, BINDLE_PASSWORD,
     TOKEN,
 };
 
-// this is the client ID registered in the Cloud's backend
-const SPIN_CLIENT_ID: &str = "583e63e9-461f-4fbe-a246-23e0fb1cad10";
+const DEFAULT_PLATFORM_URL: &str = "https://127.0.0.1:5309/";
 
-const DEFAULT_CLOUD_URL: &str = "https://cloud.fermyon.com/";
-
-/// Log into Fermyon Cloud.
+/// Log into the Fermyon self-hosted Platform.
 #[derive(Parser, Debug)]
 pub struct LoginCommand {
+    /// URL of bindle server
+    #[clap(
+        name = BINDLE_SERVER_URL_OPT,
+        long = "bindle-server",
+        env = BINDLE_URL_ENV,
+    )]
+    pub bindle_server_url: Option<String>,
+
+    /// Basic http auth username for the bindle server
+    #[clap(
+        name = BINDLE_USERNAME,
+        long = "bindle-username",
+        env = BINDLE_USERNAME,
+        requires = BINDLE_PASSWORD
+    )]
+    pub bindle_username: Option<String>,
+
+    /// Basic http auth password for the bindle server
+    #[clap(
+        name = BINDLE_PASSWORD,
+        long = "bindle-password",
+        env = BINDLE_PASSWORD,
+        requires = BINDLE_USERNAME
+    )]
+    pub bindle_password: Option<String>,
+
     /// Ignore server certificate errors.
     #[clap(
         name = INSECURE_OPT,
@@ -36,15 +56,33 @@ pub struct LoginCommand {
     )]
     pub insecure: bool,
 
-    /// URL of Fermyon Cloud Instance.
+    /// URL of the Fermyon self-hosted Platform instance.
     #[clap(
-        name = CLOUD_SERVER_URL_OPT,
+        name = PLATFORM_SERVER_URL_OPT,
         long = "url",
-        env = CLOUD_URL_ENV,
-        default_value = DEFAULT_CLOUD_URL,
+        env = PLATFORM_URL_ENV,
+        default_value = DEFAULT_PLATFORM_URL,
         value_parser = parse_url,
     )]
-    pub cloud_url: url::Url,
+    pub hippo_server_url: url::Url,
+
+    /// Hippo username
+    #[clap(
+        name = HIPPO_USERNAME,
+        long = "username",
+        env = HIPPO_USERNAME,
+        requires = HIPPO_PASSWORD,
+    )]
+    pub hippo_username: Option<String>,
+
+    /// Hippo password
+    #[clap(
+        name = HIPPO_PASSWORD,
+        long = "password",
+        env = HIPPO_PASSWORD,
+        requires = HIPPO_USERNAME,
+    )]
+    pub hippo_password: Option<String>,
 
     /// Auth Token
     #[clap(
@@ -54,39 +92,7 @@ pub struct LoginCommand {
     )]
     pub token: Option<String>,
 
-    /// Display login status
-    #[clap(
-        name = "status",
-        long = "status",
-        takes_value = false,
-        conflicts_with = "list",
-        conflicts_with = "get-device-code",
-        conflicts_with = "check-device-code"
-    )]
-    pub status: bool,
-
-    // fetch a device code
-    #[clap(
-        name = "get-device-code",
-        long = "get-device-code",
-        takes_value = false,
-        hide = true,
-        conflicts_with = "status",
-        conflicts_with = "check-device-code"
-    )]
-    pub get_device_code: bool,
-
-    // check a device code
-    #[clap(
-        name = "check-device-code",
-        long = "check-device-code",
-        hide = true,
-        conflicts_with = "status",
-        conflicts_with = "get-device-code"
-    )]
-    pub check_device_code: Option<String>,
-
-    // authentication method used for logging in (username|github)
+    // authentication method used for logging in (username|token)
     #[clap(
         name = "auth-method",
         long = "auth-method",
@@ -96,7 +102,7 @@ pub struct LoginCommand {
     pub method: Option<AuthMethod>,
 
     /// Save the login details under the specified name instead of making them
-    /// the default. Use named environments with `spin deploy --environment-name <name>`.
+    /// the default. Use named environments with `spin platform deploy --environment-name <name>`.
     #[clap(
         name = "environment-name",
         long = "environment-name",
@@ -110,9 +116,6 @@ pub struct LoginCommand {
         long = "list",
         takes_value = false,
         conflicts_with = "environment-name",
-        conflicts_with = "status",
-        conflicts_with = "get-device-code",
-        conflicts_with = "check-device-code"
     )]
     pub list: bool,
 }
@@ -133,21 +136,12 @@ fn parse_url(url: &str) -> Result<url::Url> {
 
 impl LoginCommand {
     pub async fn run(&self) -> Result<()> {
-        match (
-            self.list,
-            self.status,
-            self.get_device_code,
-            &self.check_device_code,
-        ) {
-            (true, false, false, None) => self.run_list().await,
-            (false, true, false, None) => self.run_status().await,
-            (false, false, true, None) => self.run_get_device_code().await,
-            (false, false, false, Some(device_code)) => {
-                self.run_check_device_code(device_code).await
-            }
-            (false, false, false, None) => self.run_interactive_login().await,
-            _ => Err(anyhow::anyhow!("Invalid combination of options")), // Should never happen
+        if self.list
+        {
+            self.run_list().await?
         }
+
+        self.run_interactive_login().await
     }
 
     async fn run_list(&self) -> Result<()> {
@@ -167,54 +161,83 @@ impl LoginCommand {
         Ok(())
     }
 
-    async fn run_status(&self) -> Result<()> {
-        let path = self.config_file_path()?;
-        let data = fs::read_to_string(&path)
-            .await
-            .context("Cannot display login information")?;
-        println!("{}", data);
-        Ok(())
-    }
-
-    async fn run_get_device_code(&self) -> Result<()> {
-        let connection_config = self.anon_connection_config();
-        let device_code_info = create_device_code(&Client::new(connection_config)).await?;
-
-        println!("{}", serde_json::to_string_pretty(&device_code_info)?);
-
-        Ok(())
-    }
-
-    async fn run_check_device_code(&self, device_code: &str) -> Result<()> {
-        let connection_config = self.anon_connection_config();
-        let client = Client::new(connection_config);
-
-        let token_readiness = match client.login(device_code.to_owned()).await {
-            Ok(token_info) => TokenReadiness::Ready(token_info),
-            Err(_) => TokenReadiness::Unready,
-        };
-
-        match token_readiness {
-            TokenReadiness::Ready(token_info) => {
-                println!("{}", serde_json::to_string_pretty(&token_info)?);
-                let login_connection = self.login_connection_for_token_info(token_info);
-                self.save_login_info(&login_connection)?;
-            }
-            TokenReadiness::Unready => {
-                let waiting = json!({ "status": "waiting" });
-                println!("{}", serde_json::to_string_pretty(&waiting)?);
-            }
-        }
-
-        Ok(())
-    }
-
     async fn run_interactive_login(&self) -> Result<()> {
         let login_connection = match self.auth_method() {
-            AuthMethod::Github => self.run_interactive_gh_login().await?,
             AuthMethod::Token => self.login_using_token().await?,
+            AuthMethod::UsernameAndPassword => self.run_interactive_basic_login().await?,
         };
         self.save_login_info(&login_connection)
+    }
+
+    async fn run_interactive_basic_login(&self) -> Result<LoginConnection> {
+        let username = prompt_if_not_provided(&self.hippo_username, "Hippo username")?;
+        let password = match &self.hippo_password {
+            Some(password) => password.to_owned(),
+            None => {
+                print!("Hippo password: ");
+                std::io::stdout().flush()?;
+                rpassword::read_password()
+                    .expect("unable to read user input")
+                    .trim()
+                    .to_owned()
+            }
+        };
+
+        let bindle_url = prompt_if_not_provided(&self.bindle_server_url, "Bindle URL")?;
+
+        // If Bindle URL was provided and Bindle username and password were not, assume Bindle
+        // is unauthenticated.  If Bindle URL was prompted for, or Bindle username or password
+        // is provided, ask the user.
+        let mut bindle_username = self.bindle_username.clone();
+        let mut bindle_password = self.bindle_password.clone();
+
+        let unauthenticated_bindle_server_provided = self.bindle_server_url.is_some()
+            && self.bindle_username.is_none()
+            && self.bindle_password.is_none();
+        if !unauthenticated_bindle_server_provided {
+            let bindle_username_text = prompt_if_not_provided(
+                &self.bindle_username,
+                "Bindle username (blank for unauthenticated)",
+            )?;
+            bindle_username = if bindle_username_text.is_empty() {
+                None
+            } else {
+                Some(bindle_username_text)
+            };
+            bindle_password = match bindle_username {
+                None => None,
+                Some(_) => Some(prompt_if_not_provided(
+                    &self.bindle_password,
+                    "Bindle password",
+                )?),
+            };
+        }
+
+        // log in with username/password
+        let token = match Client::login(
+            &Client::new(ConnectionInfo {
+                url: self.hippo_server_url.to_string(),
+                danger_accept_invalid_certs: self.insecure,
+                api_key: None,
+            }),
+            username,
+            password,
+        )
+        .await
+        {
+            Ok(token_info) => token_info,
+            Err(err) => return Err(err),
+        };
+
+        Ok(LoginConnection {
+            url: self.hippo_server_url.clone(),
+            danger_accept_invalid_certs: self.insecure,
+            token: token.token.unwrap_or_default(),
+            expiration: token.expiration,
+            bindle_url: Some(bindle_url),
+            bindle_username,
+            bindle_password,
+        })
     }
 
     async fn login_using_token(&self) -> Result<LoginConnection> {
@@ -225,43 +248,27 @@ impl LoginCommand {
         };
 
         // Validate the token by calling list_apps API until we have a user info API
-        Client::new(ConnectionConfig {
-            url: self.cloud_url.to_string(),
-            insecure: self.insecure,
-            token: token.clone(),
+        Client::new(ConnectionInfo {
+            url: self.hippo_server_url.to_string(),
+            danger_accept_invalid_certs: self.insecure,
+            api_key: Some(token.clone()),
         })
         .list_apps()
         .await
-        .context("Login using the provided personal access token failed. Run `spin login` or create a new token using the Fermyon Cloud user interface.")?;
+        .context("Login using the provided personal access token failed. Run `spin platform login` or create a new token using the Fermyon self-hosted Platform user interface.")?;
 
         Ok(self.login_connection_for_token(token))
     }
 
-    async fn run_interactive_gh_login(&self) -> Result<LoginConnection> {
-        // log in to the cloud API
-        let connection_config = self.anon_connection_config();
-        let token_info = github_token(connection_config).await?;
-
-        Ok(self.login_connection_for_token_info(token_info))
-    }
-
     fn login_connection_for_token(&self, token: String) -> LoginConnection {
         LoginConnection {
-            url: self.cloud_url.clone(),
+            url: self.hippo_server_url.clone(),
             danger_accept_invalid_certs: self.insecure,
             token,
-            refresh_token: None,
             expiration: None,
-        }
-    }
-
-    fn login_connection_for_token_info(&self, token_info: TokenInfo) -> LoginConnection {
-        LoginConnection {
-            url: self.cloud_url.clone(),
-            danger_accept_invalid_certs: self.insecure,
-            token: token_info.token,
-            refresh_token: Some(token_info.refresh_token),
-            expiration: Some(token_info.expiration),
+            bindle_url: self.bindle_server_url.clone(),
+            bindle_username: self.bindle_username.clone(),
+            bindle_password: self.bindle_password.clone(),
         }
     }
 
@@ -281,23 +288,13 @@ impl LoginCommand {
         Ok(path)
     }
 
-    fn anon_connection_config(&self) -> ConnectionConfig {
-        ConnectionConfig {
-            url: self.cloud_url.to_string(),
-            insecure: self.insecure,
-            token: Default::default(),
-        }
-    }
-
     fn auth_method(&self) -> AuthMethod {
         if let Some(method) = &self.method {
             method.clone()
-        } else if self.get_device_code || self.check_device_code.is_some() {
-            AuthMethod::Github
         } else if self.token.is_some() {
             AuthMethod::Token
         } else {
-            AuthMethod::Github
+            AuthMethod::UsernameAndPassword
         }
     }
 
@@ -315,56 +312,6 @@ fn config_root_dir() -> Result<PathBuf, anyhow::Error> {
     Ok(root)
 }
 
-async fn github_token(
-    connection_config: ConnectionConfig,
-) -> Result<cloud_openapi::models::TokenInfo> {
-    let client = Client::new(connection_config);
-
-    // Generate a device code and a user code to activate it with
-    let device_code = create_device_code(&client).await?;
-
-    println!(
-        "\nCopy your one-time code:\n\n{}\n",
-        device_code.user_code.clone(),
-    );
-
-    println!(
-        "...and open the authorization page in your browser:\n\n{}\n",
-        device_code.verification_url.clone(),
-    );
-
-    // The OAuth library should theoretically handle waiting for the device to be authorized, but
-    // testing revealed that it doesn't work. So we manually poll every 10 seconds for fifteen minutes.
-    const POLL_INTERVAL_SECS: u64 = 10;
-    let mut seconds_elapsed = 0;
-    let timeout_seconds = 15 * 60;
-
-    // Loop while waiting for the device code to be authorized by the user
-    loop {
-        if seconds_elapsed > timeout_seconds {
-            bail!("Timed out waiting to authorize the device. Please execute `spin login` again and authorize the device with GitHub.");
-        }
-
-        match client.login(device_code.device_code.clone()).await {
-            Ok(response) => {
-                println!("Device authorized!");
-                return Ok(response);
-            }
-            Err(_) => {
-                println!("Waiting for device authorization...");
-                tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_SECS)).await;
-                seconds_elapsed += POLL_INTERVAL_SECS;
-            }
-        };
-    }
-}
-
-async fn create_device_code(client: &Client) -> Result<DeviceCodeItem> {
-    client
-        .create_device_code(Uuid::parse_str(SPIN_CLIENT_ID)?)
-        .await
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 pub struct LoginConnection {
     pub url: Url,
@@ -372,10 +319,10 @@ pub struct LoginConnection {
     pub token: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
-    pub refresh_token: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(default)]
     pub expiration: Option<String>,
+    pub bindle_url: Option<String>,
+    pub bindle_username: Option<String>,
+    pub bindle_password: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -413,15 +360,10 @@ fn ensure(root: &PathBuf) -> Result<()> {
 /// The method by which to authenticate the login.
 #[derive(clap::ArgEnum, Clone, Debug, Eq, PartialEq)]
 pub enum AuthMethod {
-    #[clap(name = "github")]
-    Github,
     #[clap(name = "token")]
     Token,
-}
-
-enum TokenReadiness {
-    Ready(TokenInfo),
-    Unready,
+    #[clap(name = "username")]
+    UsernameAndPassword,
 }
 
 fn environment_name_from_path(dir_entry: std::io::Result<std::fs::DirEntry>) -> Option<String> {
@@ -455,6 +397,21 @@ fn is_file_with_extension(de: &std::fs::DirEntry, extension: &std::ffi::OsString
             } else {
                 false
             }
+        }
+    }
+}
+
+fn prompt_if_not_provided(provided: &Option<String>, prompt_text: &str) -> Result<String> {
+    match provided {
+        Some(value) => Ok(value.to_owned()),
+        None => {
+            print!("{}: ", prompt_text);
+            std::io::stdout().flush()?;
+            let mut input = String::new();
+            stdin()
+                .read_line(&mut input)
+                .expect("unable to read user input");
+            Ok(input.trim().to_owned())
         }
     }
 }

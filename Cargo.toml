@@ -1,11 +1,11 @@
 [package]
-name = "cloud-plugin"
+name = "platform-plugin"
 version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.0"
 authors = ["Fermyon Engineering <engineering@fermyon.com>"]
 edition = "2021"
 
@@ -18,8 +18,8 @@ bindle = { git = "https://github.com/fermyon/bindle", tag = "v0.8.2", default-fe
 ] }
 chrono = "0.4"
 clap = { version = "3.2.24", features = ["derive", "env"] }
-cloud = { path = "crates/cloud" }
-cloud-openapi = { git = "https://github.com/fermyon/cloud-openapi", rev = "98e7bd2ca97eab25c88dae5d6c65609577d36992" }
+hippo = { git = "https://github.com/deislabs/hippo-cli", tag = "v0.16.1" }
+hippo-openapi = "0.10"
 dirs = "5.0"
 tokio = { version = "1.23", features = ["full"] }
 tracing = { workspace = true }

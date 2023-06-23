@@ -4,8 +4,8 @@ use anyhow::{anyhow, bail, ensure, Context, Result};
 use bindle::Id;
 use chrono::{DateTime, Utc};
 use clap::Parser;
-use cloud::client::{Client as CloudClient, ConnectionConfig};
-use cloud_openapi::models::ChannelRevisionSelectionStrategy as CloudChannelRevisionSelectionStrategy;
+use hippo::{Client, ConnectionInfo};
+use hippo_openapi::models::ChannelRevisionSelectionStrategy;
 use rand::Rng;
 use semver::BuildMetadata;
 use sha2::{Digest, Sha256};
@@ -32,8 +32,6 @@ use std::{
 use url::Url;
 use uuid::Uuid;
 
-use crate::commands::variables::set_variables;
-
 use crate::{
     commands::login::{LoginCommand, LoginConnection},
     opts::*,
@@ -44,9 +42,9 @@ const SPIN_DEPLOY_CHANNEL_NAME: &str = "spin-deploy";
 const SPIN_DEFAULT_KV_STORE: &str = "default";
 const BINDLE_REGISTRY_URL_PATH: &str = "api/registry";
 
-/// Package and upload an application to the Fermyon Cloud.
+/// Package and upload an application to the Fermyon self-hosted Platform.
 #[derive(Parser, Debug)]
-#[clap(about = "Package and upload an application to the Fermyon Cloud")]
+#[clap(about = "Package and upload an application to the Fermyon self-hosted Platform")]
 pub struct DeployCommand {
     /// The application to deploy. This may be a manifest (spin.toml) file, or a
     /// directory containing a spin.toml file.
@@ -121,25 +119,21 @@ impl DeployCommand {
     pub async fn run(self) -> Result<()> {
         let login_connection = login_connection(self.deployment_env_id.as_deref()).await?;
 
-        const DEVELOPER_CLOUD_FAQ: &str = "https://developer.fermyon.com/cloud/faq";
-
-        self.deploy_cloud(login_connection)
-            .await
-            .map_err(|e| anyhow!("{:?}\n\nLearn more at {}", e, DEVELOPER_CLOUD_FAQ))
+        self.deploy(login_connection).await
     }
 
     fn app(&self) -> anyhow::Result<PathBuf> {
         spin_common::paths::resolve_manifest_file_path(&self.app_source)
     }
 
-    async fn deploy_cloud(self, login_connection: LoginConnection) -> Result<()> {
-        let connection_config = ConnectionConfig {
+    async fn deploy(self, login_connection: LoginConnection) -> Result<()> {
+        let connection_config = ConnectionInfo {
             url: login_connection.url.to_string(),
-            insecure: login_connection.danger_accept_invalid_certs,
-            token: login_connection.token.clone(),
+            danger_accept_invalid_certs: login_connection.danger_accept_invalid_certs,
+            api_key: Some(login_connection.token.clone()),
         };
 
-        let client = CloudClient::new(connection_config.clone());
+        let client = Client::new(connection_config);
 
         let cfg_any = spin_loader::local::raw_manifest_from_file(&self.app()?).await?;
         let cfg = cfg_any.into_v1();
@@ -182,7 +176,7 @@ impl DeployCommand {
         // via only `add_revision` if bindle naming schema is updated so bindles can be deterministically ordered by Cloud.
         let channel_id = match self.get_app_id_cloud(&client, name.clone()).await {
             Ok(app_id) => {
-                CloudClient::add_revision(
+                Client::add_revision(
                     &client,
                     name.clone(),
                     bindle_id.version_string().clone(),
@@ -194,36 +188,24 @@ impl DeployCommand {
                 let active_revision_id = self
                     .get_revision_id_cloud(&client, bindle_id.version_string().clone(), app_id)
                     .await?;
-                CloudClient::patch_channel(
+                Client::patch_channel(
                     &client,
                     existing_channel_id,
                     None,
-                    Some(CloudChannelRevisionSelectionStrategy::UseSpecifiedRevision),
+                    None,
+                    Some(ChannelRevisionSelectionStrategy::UseSpecifiedRevision),
                     None,
                     Some(active_revision_id),
                     None,
+                    None
                 )
                 .await
                 .context("Problem patching a channel")?;
 
-                for kv in self.key_values {
-                    CloudClient::add_key_value_pair(
-                        &client,
-                        app_id,
-                        SPIN_DEFAULT_KV_STORE.to_string(),
-                        kv.0,
-                        kv.1,
-                    )
-                    .await
-                    .context("Problem creating key/value")?;
-                }
-
-                set_variables(&client, app_id, &self.variables).await?;
-
                 existing_channel_id
             }
             Err(_) => {
-                let app_id = CloudClient::add_app(&client, &name, &name)
+                let app_id = Client::add_app(&client, name.clone(), name)
                     .await
                     .context("Unable to create app")?;
 
@@ -234,36 +216,24 @@ impl DeployCommand {
                     .get_revision_id_cloud(&client, bindle_id.version_string().clone(), app_id)
                     .await?;
 
-                let channel_id = CloudClient::add_channel(
+                let channel_id = Client::add_channel(
                     &client,
                     app_id,
                     String::from(SPIN_DEPLOY_CHANNEL_NAME),
-                    CloudChannelRevisionSelectionStrategy::UseSpecifiedRevision,
+                    None,
+                    ChannelRevisionSelectionStrategy::UseSpecifiedRevision,
                     None,
                     Some(active_revision_id),
+                    None,
                 )
                 .await
                 .context("Problem creating a channel")?;
-
-                for kv in self.key_values {
-                    CloudClient::add_key_value_pair(
-                        &client,
-                        app_id,
-                        SPIN_DEFAULT_KV_STORE.to_string(),
-                        kv.0,
-                        kv.1,
-                    )
-                    .await
-                    .context("Problem creating key/value")?;
-                }
-
-                set_variables(&client, app_id, &self.variables).await?;
 
                 channel_id
             }
         };
 
-        let channel = CloudClient::get_channel_by_id(&client, &channel_id.to_string())
+        let channel = Client::get_channel_by_id(&client, &channel_id.to_string())
             .await
             .context("Problem getting channel by id")?;
         let app_base_url = build_app_base_url(&channel.domain, &login_connection.url)?;
@@ -272,7 +242,7 @@ impl DeployCommand {
                 &app_base_url,
                 &bindle_id.version_string(),
                 self.readiness_timeout_secs,
-                Destination::Cloud(connection_config.url),
+                Destination::Cloud(login_connection.url.to_string()),
             )
             .await;
             print_available_routes(&app_base_url, &http_config.base, &cfg);
@@ -322,8 +292,8 @@ impl DeployCommand {
         Ok(buildinfo)
     }
 
-    async fn get_app_id_cloud(&self, cloud_client: &CloudClient, name: String) -> Result<Uuid> {
-        let apps_vm = CloudClient::list_apps(cloud_client).await?;
+    async fn get_app_id_cloud(&self, client: &Client, name: String) -> Result<Uuid> {
+        let apps_vm = Client::list_apps(client).await?;
         let app = apps_vm.items.iter().find(|&x| x.name == name.clone());
         match app {
             Some(a) => Ok(a.id),
@@ -333,11 +303,11 @@ impl DeployCommand {
 
     async fn get_revision_id_cloud(
         &self,
-        cloud_client: &CloudClient,
+        client: &Client,
         bindle_version: String,
         app_id: Uuid,
     ) -> Result<Uuid> {
-        let mut revisions = cloud_client.list_revisions().await?;
+        let mut revisions = client.list_revisions().await?;
 
         loop {
             if let Some(revision) = revisions
@@ -352,7 +322,7 @@ impl DeployCommand {
                 break;
             }
 
-            revisions = cloud_client.list_revisions_next(&revisions).await?;
+            revisions = client.list_revisions().await?;
         }
 
         Err(anyhow!(
@@ -364,11 +334,11 @@ impl DeployCommand {
 
     async fn get_channel_id_cloud(
         &self,
-        cloud_client: &CloudClient,
+        client: &Client,
         name: String,
         app_id: Uuid,
     ) -> Result<Uuid> {
-        let mut channels_vm = cloud_client.list_channels().await?;
+        let mut channels_vm = client.list_channels().await?;
 
         loop {
             if let Some(channel) = channels_vm
@@ -383,7 +353,7 @@ impl DeployCommand {
                 break;
             }
 
-            channels_vm = cloud_client.list_channels_next(&channels_vm).await?;
+            channels_vm = client.list_channels().await?;
         }
 
         Err(anyhow!(
@@ -528,7 +498,7 @@ async fn wait_for_ready(
             match destination {
                 Destination::Cloud(url) => {
                     println!(
-                        "Check the Fermyon Cloud dashboard to see the application status: {url}"
+                        "Check the Fermyon self-hosted Platform dashboard to see the application status: {url}"
                     );
                 }
             }
@@ -617,7 +587,7 @@ pub async fn login_connection(deployment_env_id: Option<&str>) -> Result<LoginCo
                 Some(name) => {
                     // TODO: allow auto redirect to login preserving the name
                     eprintln!("You have no instance saved as '{}'", name);
-                    eprintln!("Run `spin login --environment-name {}` to log in", name);
+                    eprintln!("Run `spin platform login --environment-name {}` to log in", name);
                     std::process::exit(1);
                 }
                 None => {
@@ -638,73 +608,30 @@ pub async fn login_connection(deployment_env_id: Option<&str>) -> Result<LoginCo
         Ok(val) => val,
         Err(err) => {
             eprintln!("{}\n", err);
-            eprintln!("Run `spin login` to log in again");
+            eprintln!("Run `spin platform login` to log in again");
             std::process::exit(1);
         }
     };
 
     if expired {
-        // if we have a refresh token available, let's try to refresh the token
-        match login_connection.refresh_token {
-            Some(refresh_token) => {
-                // Only Cloud has support for refresh tokens
-                let connection_config = ConnectionConfig {
-                    url: login_connection.url.to_string(),
-                    insecure: login_connection.danger_accept_invalid_certs,
-                    token: login_connection.token.clone(),
-                };
-                let client = CloudClient::new(connection_config.clone());
-
-                match client
-                    .refresh_token(login_connection.token, refresh_token)
-                    .await
-                {
-                    Ok(token_info) => {
-                        login_connection.token = token_info.token;
-                        login_connection.refresh_token = Some(token_info.refresh_token);
-                        login_connection.expiration = Some(token_info.expiration);
-                        // save new token info
-                        let path = config_file_path(deployment_env_id)?;
-                        std::fs::write(path, serde_json::to_string_pretty(&login_connection)?)?;
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to refresh token: {}", e);
-                        match deployment_env_id {
-                            Some(name) => {
-                                eprintln!(
-                                    "Run `spin login --environment-name {}` to log in again",
-                                    name
-                                );
-                            }
-                            None => {
-                                eprintln!("Run `spin login` to log in again");
-                            }
-                        }
-                        std::process::exit(1);
-                    }
-                }
+        // session has expired and we have no way to refresh the token - log back in
+        match deployment_env_id {
+            Some(name) => {
+                // TODO: allow auto redirect to login preserving the name
+                eprintln!("Your login to this environment has expired");
+                eprintln!(
+                    "Run `spin platform login --environment-name {}` to log in again",
+                    name
+                );
+                std::process::exit(1);
             }
             None => {
-                // session has expired and we have no way to refresh the token - log back in
-                match deployment_env_id {
-                    Some(name) => {
-                        // TODO: allow auto redirect to login preserving the name
-                        eprintln!("Your login to this environment has expired");
-                        eprintln!(
-                            "Run `spin login --environment-name {}` to log in again",
-                            name
-                        );
-                        std::process::exit(1);
-                    }
-                    None => {
-                        LoginCommand::parse_from(vec!["login"]).run().await?;
-                        let new_data = fs::read_to_string(path.clone()).await.context(format!(
-                            "Cannot find spin config at {}",
-                            path.to_string_lossy()
-                        ))?;
-                        login_connection = serde_json::from_str(&new_data)?;
-                    }
-                }
+                LoginCommand::parse_from(vec!["login"]).run().await?;
+                let new_data = fs::read_to_string(path.clone()).await.context(format!(
+                    "Cannot find spin config at {}",
+                    path.to_string_lossy()
+                ))?;
+                login_connection = serde_json::from_str(&new_data)?;
             }
         }
     }
@@ -720,8 +647,8 @@ pub async fn login_connection(deployment_env_id: Option<&str>) -> Result<LoginCo
     Ok(login_connection)
 }
 
-pub async fn get_app_id_cloud(cloud_client: &CloudClient, name: String) -> Result<Uuid> {
-    let apps_vm = CloudClient::list_apps(cloud_client).await?;
+pub async fn get_app_id_cloud(client: &Client, name: String) -> Result<Uuid> {
+    let apps_vm = Client::list_apps(client).await?;
     let app = apps_vm.items.iter().find(|&x| x.name == name.clone());
     match app {
         Some(a) => Ok(a.id),

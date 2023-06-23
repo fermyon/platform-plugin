@@ -17,7 +17,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  reset_canary_release: 
+  reset_canary_release:
     name: Delete and create Canary Release
     runs-on: ubuntu-latest
     steps:
@@ -44,10 +44,10 @@ jobs:
           prerelease: true
           body: |
             This is a "canary" release of the most recent commits on our main branch. Canary is **not stable**.
-            It is only intended for developers wishing to try out the latest features in cloud plugin, some of which may not be fully implemented.
+            It is only intended for developers wishing to try out the latest features in platform plugin, some of which may not be fully implemented.
 
   build:
-    name: Build cloud plugin
+    name: Build platform plugin
     runs-on: ${{ matrix.config.os }}
     needs: reset_canary_release
     strategy:
@@ -125,7 +125,7 @@ jobs:
         run: |
           OS=$(echo "${{ runner.os }}" | tr '[:upper:]' '[:lower:]')
           echo "RUNNER_OS=$OS" >> $GITHUB_ENV
-      
+
       - name: setup for cross-compiled linux aarch64 build
         if: matrix.config.target == 'aarch64-unknown-linux-gnu'
         run: |
@@ -144,30 +144,30 @@ jobs:
         shell: bash
         run: |
           mkdir -v _dist
-          cp ${{ matrix.config.targetDir }}/cloud-plugin${{ matrix.config.extension }} _dist/cloud${{ matrix.config.extension }}
-          cp  LICENSE _dist/cloud.license
-          cd _dist 
-          tar czf cloud-${{ env.RELEASE_VERSION }}-${{ env.RUNNER_OS }}-${{ matrix.config.arch }}.tar.gz cloud.license cloud${{ matrix.config.extension }}
+          cp ${{ matrix.config.targetDir }}/platform-plugin${{ matrix.config.extension }} _dist/platform${{ matrix.config.extension }}
+          cp  LICENSE _dist/platform.license
+          cd _dist
+          tar czf platform-${{ env.RELEASE_VERSION }}-${{ env.RUNNER_OS }}-${{ matrix.config.arch }}.tar.gz platform.license platform${{ matrix.config.extension }}
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v3
         with:
-            name: cloud-${{ env.RELEASE_VERSION }}-${{ env.RUNNER_OS }}-${{ matrix.config.arch }}.tar.gz
-            path: _dist/cloud-${{ env.RELEASE_VERSION }}-${{ env.RUNNER_OS }}-${{ matrix.config.arch }}.tar.gz
-            
+            name: platform-${{ env.RELEASE_VERSION }}-${{ env.RUNNER_OS }}-${{ matrix.config.arch }}.tar.gz
+            path: _dist/platform-${{ env.RELEASE_VERSION }}-${{ env.RUNNER_OS }}-${{ matrix.config.arch }}.tar.gz
+
       - name: upload binary to Github release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: _dist/cloud-${{ env.RELEASE_VERSION }}-${{ env.RUNNER_OS }}-${{ matrix.config.arch }}.tar.gz
+          file: _dist/platform-${{ env.RELEASE_VERSION }}-${{ env.RUNNER_OS }}-${{ matrix.config.arch }}.tar.gz
           tag: ${{ github.ref }}
 
       - name: upload binary to Github release (canary)
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: _dist/cloud-${{ env.RELEASE_VERSION }}-${{ env.RUNNER_OS }}-${{ matrix.config.arch }}.tar.gz
+          file: _dist/platform-${{ env.RELEASE_VERSION }}-${{ env.RUNNER_OS }}-${{ matrix.config.arch }}.tar.gz
           tag: "canary"
 
   checksums_and_manifests:
@@ -192,7 +192,7 @@ jobs:
       - name: generate checksums
         run: |
           ls -lh
-          sha256sum cloud*.tar.gz/cloud*.tar.gz > checksums-${{ env.RELEASE_VERSION }}.txt
+          sha256sum platform*.tar.gz/platform*.tar.gz > checksums-${{ env.RELEASE_VERSION }}.txt
 
       - name: upload checksums to Github release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -212,11 +212,11 @@ jobs:
 
       - name: create plugin manifest
         shell: bash
-        run: bash .plugin-manifests/generate-manifest.sh ${{ env.RELEASE_VERSION }} checksums-${{ env.RELEASE_VERSION }}.txt > cloud.json
+        run: bash .plugin-manifests/generate-manifest.sh ${{ env.RELEASE_VERSION }} checksums-${{ env.RELEASE_VERSION }}.txt > platform.json
 
       - name: upload plugin manifest to releases
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: cloud.json
+          file: platform.json
           tag: ${{ env.RELEASE_VERSION }}

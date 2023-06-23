@@ -2,7 +2,7 @@ mod commands;
 mod opts;
 use anyhow::{anyhow, Error, Result};
 use clap::{FromArgMatches, Parser};
-use commands::{deploy::DeployCommand, login::LoginCommand, variables::VariablesCommand};
+use commands::{deploy::DeployCommand, login::LoginCommand};
 use semver::BuildMetadata;
 use spin_bindle::PublishError;
 use std::path::Path;
@@ -20,28 +20,24 @@ const VERSION: &str = concat!(
 #[derive(Parser)]
 #[clap(author, version = VERSION, about, long_about = None)]
 #[clap(propagate_version = true)]
-enum CloudCli {
-    /// Package and upload an application to the Fermyon Cloud.
+enum Cli {
+    /// Package and upload an application to the Fermyon Platform.
     Deploy(DeployCommand),
-    /// Login to Fermyon Cloud
+    /// Login to Fermyon Platform
     Login(LoginCommand),
-    /// Manage Spin application variables
-    #[clap(subcommand, alias = "vars")]
-    Variables(VariablesCommand),
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let mut app = CloudCli::clap();
+    let mut app = Cli::clap();
     // Plugin should always be invoked from Spin so set binary name accordingly
-    app.set_bin_name("spin cloud");
+    app.set_bin_name("spin platform");
     let matches = app.get_matches();
-    let cli = CloudCli::from_arg_matches(&matches)?;
+    let cli = Cli::from_arg_matches(&matches)?;
 
     match cli {
-        CloudCli::Deploy(cmd) => cmd.run().await,
-        CloudCli::Login(cmd) => cmd.run().await,
-        CloudCli::Variables(cmd) => cmd.run().await,
+        Cli::Deploy(cmd) => cmd.run().await,
+        Cli::Login(cmd) => cmd.run().await,
     }
 }
 
