@@ -1,0 +1,7 @@
+name = "platform"
+description = "Commands for publishing applications to the self-hosted Fermyon Platform."
+version = "0.1.0"
+spin_compatibility = ">=1.3"
+license = "Apache-2.0"
+homepage = "https://github.com/fermyon/platform-plugin"
+package = "./target/release/platform-plugin"

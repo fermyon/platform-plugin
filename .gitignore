@@ -1,1 +1,4 @@
 target
+
+platform-*.tar.gz
+platform.json
