@@ -40,7 +40,6 @@ use crate::{
 
 const SPIN_DEPLOY_CHANNEL_NAME: &str = "spin-deploy";
 const SPIN_DEFAULT_KV_STORE: &str = "default";
-const BINDLE_REGISTRY_URL_PATH: &str = "api/registry";
 
 /// Package and upload an application to the Fermyon self-hosted Platform.
 #[derive(Parser, Debug)]
@@ -157,11 +156,17 @@ impl DeployCommand {
             None
         };
 
-        let su = Url::parse(login_connection.url.as_str())?;
-        let bindle_connection_info = BindleConnectionInfo::from_token(
-            su.join(BINDLE_REGISTRY_URL_PATH)?.to_string(),
+        let bu = Url::parse(
+            login_connection
+                .bindle_url
+                .unwrap_or("http://127.0.0.1:8080/v1".to_owned())
+                .as_str(),
+        )?;
+        let bindle_connection_info = BindleConnectionInfo::new(
+            bu.to_string(),
             login_connection.danger_accept_invalid_certs,
-            login_connection.token,
+            login_connection.bindle_username,
+            login_connection.bindle_password,
         );
 
         let bindle_id = self
