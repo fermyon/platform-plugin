@@ -420,7 +420,9 @@ fn validate_cloud_app(app: &RawAppManifest) -> Result<()> {
 
 fn random_buildinfo() -> BuildMetadata {
     let random_bytes: [u8; 4] = rand::thread_rng().gen();
-    let random_hex: String = random_bytes.iter().map(|b| format!("{:x}", b)).collect();
+    let random_hex: String = random_bytes.iter().fold(String::new(), |output, b| {
+        output + format!("{:x}", b).as_str()
+    });
     BuildMetadata::new(&format!("r{random_hex}")).unwrap()
 }
 
