@@ -125,9 +125,9 @@ jobs:
           tar czf platform-${{ env.RELEASE_VERSION }}-${{ env.RUNNER_OS }}-${{ matrix.config.arch }}.tar.gz platform.license platform${{ matrix.config.extension }}
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-            name: platform
+            name: platform-${{ env.RUNNER_OS }}-${{ matrix.config.arch }}
             path: _dist/platform-${{ env.RELEASE_VERSION }}-${{ env.RUNNER_OS }}-${{ matrix.config.arch }}.tar.gz
 
       - name: upload binary to Github release
@@ -155,18 +155,19 @@ jobs:
         run: echo "RELEASE_VERSION=${GITHUB_REF/refs\/tags\//}" >> $GITHUB_ENV
 
       - name: download release assets
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
-          name: platform
+          pattern: platform-*
+          merge-multiple: true
 
       - name: generate checksums
         run: |
           ls -lh
           sha256sum platform*.tar.gz > checksums-${{ env.RELEASE_VERSION }}.txt
 
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
-          name: platform
+          name: platform-checksums
           path: checksums-${{ env.RELEASE_VERSION }}.txt
 
       - name: upload checksums to Github release
@@ -181,9 +182,9 @@ jobs:
         shell: bash
         run: bash .plugin-manifests/generate-manifest.sh ${{ env.RELEASE_VERSION }} checksums-${{ env.RELEASE_VERSION }}.txt > platform.json
 
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
-          name: platform
+          name: platform-manifest
           path: platform.json
 
       - name: upload plugin manifest to release
@@ -203,9 +204,10 @@ jobs:
       - uses: actions/checkout@v3
 
       - name: download release assets
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
-          name: platform
+          pattern: platform-*
+          merge-multiple: true
 
       - name: 'Check if canary tag exists'
         id: canaryExists
